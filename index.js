@@ -652,6 +652,47 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * 取一集的全部弹幕。
+   *
+   * 服务端按播放时间每 ~30 秒切一页（DanmakuPage），并且一段没有弹幕时
+   * has_more 仍可能为真，所以要顺着 cursor 一直翻到 has_more 为假。短剧单集
+   * 通常只有两三页，翻完一次就能把整集铺满；这里仍设了页数/条数上限，
+   * 防止异常数据把一次请求拖死。只回传文字和时间，发送者身份本来就不带。
+   */
+  async function collectDanmaku(sdk, seriesId, episodeId) {
+    const byId = new Map()
+    let total = 0
+    let endMs = 0
+    const take = (page) => {
+      if (!page) return
+      if (Number(page.total) > total) total = Number(page.total)
+      if (Number(page.end_ms) > endMs) endMs = Number(page.end_ms)
+      for (const item of page.items ?? []) {
+        if (!item || !item.text) continue
+        const key = item.id ?? `${item.offset_ms}:${item.text}`
+        if (byId.has(key)) continue
+        byId.set(key, {
+          id: item.id ?? '',
+          text: String(item.text).slice(0, 120),
+          ms: Number(item.offset_ms) || 0,
+        })
+      }
+    }
+    let page = await sdk.listDanmaku(seriesId, episodeId, { startMs: 0, pageSize: 90 })
+    take(page)
+    let cursor = page?.cursor ?? ''
+    let guard = 0
+    while (page?.has_more === true && cursor && guard < 120 && byId.size < 5000) {
+      guard += 1
+      page = await sdk.listDanmaku(seriesId, episodeId, { cursor, pageSize: 90 })
+      take(page)
+      cursor = page?.cursor ?? ''
+    }
+    const items = [...byId.values()].sort((a, b) => a.ms - b.ms)
+    return { items, total: total || items.length, durationMs: endMs }
+  }
+
+  /**
    * The drama list: the recommended feed first (it is ranked by heat and
    * carries covers), then one page per configured search for anything else.
    */
@@ -1104,6 +1145,25 @@ export function apply(ctx, config = {}) {
             cover: episode.cover_url,
             playable: episode.playable !== false,
           })),
+        }
+      })
+    }
+
+    // 一集的弹幕。备用片源（hghub）没有弹幕接口，直接回空列表。
+    if (path === '/danmaku') {
+      const episodeId = (url.searchParams.get('episode') ?? '').trim()
+      const seriesId = (url.searchParams.get('series') ?? '').trim()
+      if (!episodeId) return send(400, { ok: false, error: { message: 'missing episode' } })
+      if (usesHghub(url) || !seriesId) return send(200, { items: [], total: 0 })
+      return json(async () => {
+        const sdk = await client()
+        try {
+          return await collectDanmaku(sdk, seriesId, episodeId)
+        } catch (error) {
+          if (error?.code !== 'ANONYMOUS_LIMITED') throw error
+          // 匿名设备额度用尽：换一个再取，弹幕不该因这次额度错误而整段消失。
+          await sdk.resetDevice()
+          return collectDanmaku(sdk, seriesId, episodeId)
         }
       })
     }

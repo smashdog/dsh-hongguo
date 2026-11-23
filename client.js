@@ -312,6 +312,10 @@ window.__ModuleLoader__.load({
 .hg-prompt .hg-pick:hover{border-color:var(--dsw-alias-brand-primary);}
 .hg-prompt .hg-pick.more{color:var(--dsw-alias-label-secondary);}
 @keyframes hg-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+/* 弹幕：铺在画面上、控制条下面的一层，元素由脚本按播放时间生成并滑过。 */
+.hg-danmaku{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2;contain:layout paint;}
+.hg-dm{position:absolute;left:0;top:0;white-space:nowrap;color:#fff;font-size:15px;font-weight:600;line-height:1.25;letter-spacing:.2px;text-shadow:0 1px 2px rgba(0,0,0,.9),0 0 3px rgba(0,0,0,.65);will-change:transform;padding:0 2px;}
+.hg-ctl.active{color:#ffd54a;}
 `
 
     /** Decorative mark shared by the tab, the button and the guide. */
@@ -941,6 +945,98 @@ window.__ModuleLoader__.load({
       return h('div', { ref, className: 'hg-video-slot' })
     }
 
+    /**
+     * 弹幕层：挂在舞台里、控制条下面。文字和时间来自 Host 的 `/danmaku`
+     * （内容密钥和匿名身份都留在 Host，页面只拿到一行行文字和时间点）。
+     * 用 requestAnimationFrame 读视频时间，到点就把一条弹幕从右向左推过画面；
+     * 拖动进度条时重置游标，避免把中间漏掉的弹幕一起补出来。
+     */
+    function DanmakuLayer({ seriesId, episodeId, source, enabled }) {
+      const ref = React.useRef(null)
+      const itemsRef = React.useRef([])
+      React.useEffect(() => {
+        const box = ref.current
+        if (!box) return undefined
+        box.textContent = ''
+        itemsRef.current = []
+        if (!enabled || !seriesId || !episodeId || source === 'hghub') return undefined
+        let stale = false
+        callApi(`/danmaku?${sourceQuery(source)}&series=${encodeURIComponent(seriesId)}&episode=${encodeURIComponent(episodeId)}`)
+          .then((body) => {
+            if (stale) return
+            itemsRef.current = (Array.isArray(body.items) ? body.items : [])
+              .map((item) => ({ text: String(item?.text ?? ''), ms: Number(item?.ms) || 0 }))
+              .filter((item) => item.text)
+              .sort((a, b) => a.ms - b.ms)
+          })
+          .catch(() => {})
+        return () => {
+          stale = true
+          itemsRef.current = []
+          box.textContent = ''
+        }
+      }, [seriesId, episodeId, source, enabled])
+      React.useEffect(() => {
+        const box = ref.current
+        if (!box || !enabled) return undefined
+        let raf = 0
+        let pointer = 0
+        let lastNow = -1
+        let laneCursor = 0
+        const lanes = 5
+        const speed = 110 // px/s
+        const spawn = (text) => {
+          if (box.childElementCount >= 40) return
+          const width = box.clientWidth || 320
+          const usable = Math.round((box.clientHeight || 480) * 0.7)
+          const el = document.createElement('span')
+          el.className = 'hg-dm'
+          el.textContent = text
+          const lane = laneCursor % lanes
+          laneCursor += 1
+          el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 12}px`
+          el.style.transform = `translateX(${width}px)`
+          box.append(el)
+          const elWidth = el.offsetWidth || 120
+          const duration = Math.min(14, Math.max(5, (width + elWidth) / speed))
+          el.style.transition = `transform ${duration}s linear`
+          requestAnimationFrame(() => {
+            el.style.transform = `translateX(${-elWidth - 4}px)`
+          })
+          el.addEventListener('transitionend', () => el.remove())
+          setTimeout(() => el.remove(), duration * 1000 + 200)
+        }
+        const tick = () => {
+          const video = videoRef.current
+          const now = video ? video.currentTime * 1000 : 0
+          const list = itemsRef.current
+          if (list.length > 0) {
+            if (now + 300 < lastNow) {
+              box.textContent = ''
+              pointer = 0
+              while (pointer < list.length && list[pointer].ms < now - 500) pointer += 1
+            } else if (now > lastNow + 1500) {
+              while (pointer < list.length && list[pointer].ms < now) pointer += 1
+            }
+            if (now >= lastNow) {
+              while (pointer < list.length && list[pointer].ms <= now) {
+                if (list[pointer].ms >= now - 1200) spawn(list[pointer].text)
+                pointer += 1
+              }
+            }
+          }
+          lastNow = now
+          raf = requestAnimationFrame(tick)
+        }
+        raf = requestAnimationFrame(tick)
+        return () => {
+          cancelAnimationFrame(raf)
+          box.textContent = ''
+        }
+      }, [enabled])
+      return h('div', { ref, className: 'hg-danmaku', 'aria-hidden': 'true' })
+    }
+
     // A drama that is playing follows the user into the next session: the
     // shell writes the foreground session on every switch, and the follower
     // opens the drama tab there when that session is not showing one.
@@ -1055,6 +1151,24 @@ window.__ModuleLoader__.load({
       const [pausedByFinish] = useShared('pausedByFinish')
       const [watched, setWatched] = useShared('watched')
       const [resumeNotice, setResumeNotice] = useShared('resumeNotice')
+      /** 弹幕开关记在本地；默认打开，关掉后不再为这一层发请求。 */
+      const [danmakuOn, setDanmakuOn] = React.useState(() => {
+        try {
+          return localStorage.getItem('hg.danmaku') !== 'off'
+        } catch {
+          return true
+        }
+      })
+      const toggleDanmaku = () =>
+        setDanmakuOn((value) => {
+          const next = !value
+          try {
+            localStorage.setItem('hg.danmaku', next ? 'on' : 'off')
+          } catch {
+            // 隐私模式存不了，只影响这一次的默认值。
+          }
+          return next
+        })
 
       const loadFeed = React.useCallback(() => {
         setFeed((previous) => ({ ...previous, status: 'loading', error: undefined }))
@@ -1595,6 +1709,14 @@ window.__ModuleLoader__.load({
                   h('button', { type: 'button', className: 'hg-ctl', 'aria-label': t('player.next'), disabled: !nextEpisode, onClick: () => nextEpisode && playEpisode(nextEpisode) }, h(Icon, { name: 'next' })),
                   h('span', { className: 'hg-time' }, formatTime(progress.time) + ' / ' + formatTime(progress.duration)),
                   h('span', { className: 'hg-spacer' }),
+                  h('button', {
+                    type: 'button',
+                    className: 'hg-ctl' + (danmakuOn ? ' active' : ''),
+                    title: '弹幕',
+                    'aria-label': '弹幕',
+                    'aria-pressed': String(danmakuOn),
+                    onClick: toggleDanmaku,
+                  }, '弹'),
                   h(
                     'select',
                     {
@@ -1624,6 +1746,9 @@ window.__ModuleLoader__.load({
           },
           activeSource
             ? h(VideoSlot)
+            : null,
+          series && current && activeSource
+            ? h(DanmakuLayer, { seriesId: series.id, episodeId: current.id, source, enabled: danmakuOn })
             : null,
           overlay,
           volumeNotice === undefined

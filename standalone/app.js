@@ -139,6 +139,48 @@ function writeVolume(value) {
   }
 }
 
+// ---- danmaku ----------------------------------------------------------
+/** One switch shared with the Sidebar half; off means no request either. */
+const DANMAKU_KEY = `${HISTORY_KEY}.danmaku`
+const danmaku = { enabled: readDanmakuOn(), items: [] }
+function readDanmakuOn() {
+  try {
+    return localStorage.getItem(DANMAKU_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+function writeDanmakuOn(value) {
+  try {
+    localStorage.setItem(DANMAKU_KEY, value ? 'on' : 'off')
+  } catch {
+    // A disabled storage loses only the setting.
+  }
+}
+const dmLayer = h('div', { class: 'hg-danmaku' })
+/** Bumped per episode so a slow reply for the previous one is dropped. */
+let danmakuSeq = 0
+
+/** Load the current episode's danmaku; the Host returns { items:[{text,ms}] }. */
+async function loadDanmaku() {
+  danmakuSeq += 1
+  const seq = danmakuSeq
+  danmaku.items = []
+  dmLayer.textContent = ''
+  if (!danmaku.enabled || !state.series?.id || !state.current?.id) return
+  try {
+    const params = new URLSearchParams({ series: state.series.id, episode: state.current.id })
+    const body = await api(`/danmaku?${params}`)
+    if (seq !== danmakuSeq) return
+    danmaku.items = (body.items ?? [])
+      .map((item) => ({ text: String(item?.text ?? ''), ms: Number(item?.ms) || 0 }))
+      .filter((item) => item.text)
+      .sort((a, b) => a.ms - b.ms)
+  } catch {
+    danmaku.items = []
+  }
+}
+
 /** The volume readout, rewritten in place so a wheel turn needs no re-render. */
 let volumeLabel
 /** The level drawn over the picture for a moment after any volume change. */
@@ -177,7 +219,7 @@ video.addEventListener('volumechange', () => {
   showVolumeOsd()
 })
 
-const stage = h('div', { class: 'hg-stage' }, video)
+const stage = h('div', { class: 'hg-stage' }, video, dmLayer)
 /** The on-picture level indicator; hidden until a volume change shows it. */
 volumeOsd = h('div', { class: 'hg-vol', text: '' })
 stage.append(volumeOsd)
@@ -189,6 +231,65 @@ stage.addEventListener('wheel', (event) => {
   video.volume = next
   video.muted = next === 0
 }, { passive: false })
+
+/** Push danmaku across the picture as the video reaches each one's time. */
+function startDanmaku() {
+  let pointer = 0
+  let lastNow = -1
+  let laneCursor = 0
+  const lanes = 5
+  const speed = 110 // px/s
+  const spawn = (text) => {
+    if (dmLayer.childElementCount >= 40) return
+    const width = dmLayer.clientWidth || stage.clientWidth || 320
+    const usable = Math.round((dmLayer.clientHeight || stage.clientHeight || 480) * 0.7)
+    const el = document.createElement('span')
+    el.className = 'hg-dm'
+    el.textContent = text
+    const lane = laneCursor % lanes
+    laneCursor += 1
+    el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 12}px`
+    el.style.transform = `translateX(${width}px)`
+    dmLayer.append(el)
+    const elWidth = el.offsetWidth || 120
+    const duration = Math.min(14, Math.max(5, (width + elWidth) / speed))
+    el.style.transition = `transform ${duration}s linear`
+    requestAnimationFrame(() => {
+      el.style.transform = `translateX(${-elWidth - 4}px)`
+    })
+    el.addEventListener('transitionend', () => el.remove())
+    setTimeout(() => el.remove(), duration * 1000 + 200)
+  }
+  const tick = () => {
+    const now = video.currentTime * 1000
+    const list = danmaku.items
+    if (!danmaku.enabled) {
+      if (dmLayer.childElementCount) dmLayer.textContent = ''
+      pointer = 0
+      lastNow = now
+      requestAnimationFrame(tick)
+      return
+    }
+    if (list.length > 0) {
+      if (now + 300 < lastNow) {
+        dmLayer.textContent = ''
+        pointer = 0
+        while (pointer < list.length && list[pointer].ms < now - 500) pointer += 1
+      } else if (now > lastNow + 1500) {
+        while (pointer < list.length && list[pointer].ms < now) pointer += 1
+      }
+      if (now >= lastNow) {
+        while (pointer < list.length && list[pointer].ms <= now) {
+          if (list[pointer].ms >= now - 1200) spawn(list[pointer].text)
+          pointer += 1
+        }
+      }
+    }
+    lastNow = now
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
 
 async function togglePip() {
   try {
@@ -310,6 +411,7 @@ async function play(episode, at, definition) {
   if (!episode?.id) return
   state.current = episode
   state.error = undefined
+  loadDanmaku()
   const startAt = Number.isFinite(at) && at > 0 ? at : progressOf(state.series?.id, episode.id) ?? 0
   state.resumeAt = startAt
   render()
@@ -463,6 +565,22 @@ function renderSeries() {
         video.playbackRate = Number(event.target.value)
       },
     }, ...SPEEDS.map((value) => h('option', { value: String(value), selected: String(value) === String(video.playbackRate) }, value === 1 ? '1x' : value + 'x'))),
+    h('button', {
+      class: 'hg-btn' + (danmaku.enabled ? ' active' : ''),
+      type: 'button',
+      'aria-pressed': String(danmaku.enabled),
+      onclick: () => {
+        danmaku.enabled = !danmaku.enabled
+        writeDanmakuOn(danmaku.enabled)
+        if (!danmaku.enabled) {
+          dmLayer.textContent = ''
+          danmaku.items = []
+        } else {
+          loadDanmaku()
+        }
+        render()
+      },
+    }, '弹幕'),
     document.pictureInPictureEnabled === true
       ? h('button', { class: 'hg-btn', type: 'button', onclick: togglePip }, '画中画')
       : null,
@@ -662,6 +780,7 @@ function boot() {
     if (last?.seriesId) openSeries({ id: last.seriesId, title: last.title })
     else refreshList()
   }
+  startDanmaku()
   pollRunning()
   setInterval(pollRunning, TICK)
 }
