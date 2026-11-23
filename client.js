@@ -68,6 +68,10 @@ window.__ModuleLoader__.load({
       'player.historyOpen': '观看历史',
       'player.search': '搜索短剧',
       'player.searching': '搜索中…',
+      'player.genre': '分类',
+      'player.theme': '主题',
+      'player.all': '全部',
+      'player.noCategory': '这个分类下暂时没有短剧',
       'player.noResults': '没有找到“{q}”相关的短剧',
       'player.historyEmpty': '还没有观看记录',
       'player.episodeOf': '第 {n} 集 · 共 {total} 集',
@@ -133,6 +137,10 @@ window.__ModuleLoader__.load({
       'player.historyOpen': 'History',
       'player.search': 'Search dramas',
       'player.searching': 'Searching…',
+      'player.genre': 'Genre',
+      'player.theme': 'Theme',
+      'player.all': 'All',
+      'player.noCategory': 'No dramas in this category yet',
       'player.noResults': 'No dramas found for “{q}”',
       'player.historyEmpty': 'Nothing watched yet',
       'player.episodeOf': 'Episode {n} of {total}',
@@ -167,6 +175,12 @@ window.__ModuleLoader__.load({
 .hg-search{display:flex;gap:6px;margin-bottom:10px;position:sticky;top:0;background:var(--dsw-alias-bg-base);padding:2px 0 8px;z-index:1;}
 .hg-input{flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font:inherit;font-size:12px;}
 .hg-body{container-type:inline-size;}
+.hg-cats{display:flex;flex-direction:column;gap:5px;margin:0 0 10px;}
+.hg-cat-line{display:flex;align-items:center;gap:6px;min-width:0;}
+.hg-cat-label{flex:none;width:26px;font-size:11px;color:var(--dsw-alias-label-secondary);}
+.hg-cat-scroll{display:flex;gap:6px;min-width:0;overflow-x:auto;padding:1px 0;scrollbar-width:none;}
+.hg-cat-scroll::-webkit-scrollbar{display:none;}
+.hg-cat-scroll .hg-pill{flex:none;}
 .hg-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px 8px;}
 @container (max-width:640px){.hg-grid{grid-template-columns:repeat(4,minmax(0,1fr));}}
 @container (max-width:460px){.hg-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
@@ -1128,6 +1142,12 @@ window.__ModuleLoader__.load({
       const [searchTick, setSearchTick] = React.useState(0)
       const [feed, setFeed] = useShared('feed')
       const [query, setQuery] = React.useState('')
+      /** 首页搜索下方的分类：体裁 + 主题（短剧筛选面板的前两维）。 */
+      const [catGroups, setCatGroups] = React.useState({ status: 'idle', genre: '', groups: [] })
+      const [catGenre, setCatGenre] = React.useState('')
+      const [catTheme, setCatTheme] = React.useState('')
+      const [browsed, setBrowsed] = React.useState({ status: 'idle', genre: '', theme: '', items: [], cursor: '', hasMore: false, loadingMore: false, error: undefined })
+      const [browseTick, setBrowseTick] = React.useState(0)
       const [series, setSeries] = useShared('series')
       const [seriesInfo, setSeriesInfo] = useShared('seriesInfo')
       const [current, setCurrent] = useShared('current')
@@ -1390,11 +1410,70 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [keyword, source, searchTick])
 
+      const categoryActive = source !== 'hghub' && !keyword && (catGenre !== '' || catTheme !== '')
+      const browsePage = (genre, theme, cursor) =>
+        callApi(`/browse?${sourceQuery(source)}${genre ? `&genre=${encodeURIComponent(genre)}` : ''}${theme ? `&theme=${encodeURIComponent(theme)}` : ''}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+
+      // 分类面板：体裁分组固定，主题等维度随体裁变化。
+      React.useEffect(() => {
+        let stale = false
+        setCatGroups((previous) => ({ ...previous, status: 'loading', error: undefined }))
+        callApi(`/categories?${sourceQuery(source)}&genre=${encodeURIComponent(catGenre)}`)
+          .then((body) => {
+            if (!stale) setCatGroups({ status: 'ready', genre: catGenre, groups: body.groups ?? [], error: undefined })
+          })
+          .catch((error) => {
+            if (!stale) setCatGroups({ status: 'error', genre: catGenre, groups: [], error })
+          })
+        return () => { stale = true }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [catGenre, source])
+
+      // 分类浏览：没有搜索词时，选了体裁/主题就从筛选页取列表。
+      React.useEffect(() => {
+        if (!categoryActive) {
+          setBrowsed({ status: 'idle', genre: '', theme: '', items: [], cursor: '', hasMore: false, loadingMore: false, error: undefined })
+          return undefined
+        }
+        let stale = false
+        setBrowsed({ status: 'loading', genre: catGenre, theme: catTheme, items: [], cursor: '', hasMore: false, loadingMore: false, error: undefined })
+        const timer = setTimeout(async () => {
+          const items = []
+          let cursor = ''
+          let hasMore = true
+          try {
+            for (let attempt = 0; attempt < 2 && hasMore; attempt += 1) {
+              const body = await browsePage(catGenre, catTheme, cursor)
+              const seen = new Set(items.map((item) => item.id))
+              for (const item of body.items ?? []) {
+                if (!item?.id || seen.has(item.id)) continue
+                seen.add(item.id)
+                items.push(item)
+              }
+              cursor = body.cursor ?? ''
+              hasMore = body.hasMore === true && cursor !== ''
+              if (items.length >= 18) break
+            }
+          } catch (error) {
+            if (!stale) setBrowsed({ status: 'error', genre: catGenre, theme: catTheme, items: [], cursor: '', hasMore: false, loadingMore: false, error })
+            return
+          }
+          if (!stale) setBrowsed({ status: 'ready', genre: catGenre, theme: catTheme, items, cursor, hasMore, loadingMore: false, error: undefined })
+        }, 0)
+        return () => {
+          stale = true
+          clearTimeout(timer)
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [categoryActive, catGenre, catTheme, browseTick, source])
+
       const PAGE = 12
       // The featured drama is already on screen; the grid shows the others.
       const pool = keyword
         ? found.items
-        : feed.items.filter((item) => item && item.id !== recommendation?.id)
+        : categoryActive
+          ? browsed.items
+          : feed.items.filter((item) => item && item.id !== recommendation?.id)
       const pageCount = Math.max(1, Math.ceil(pool.length / PAGE))
       const shownPage = page % pageCount
       const visible = pool.slice(shownPage * PAGE, shownPage * PAGE + PAGE)
@@ -1438,6 +1517,41 @@ window.__ModuleLoader__.load({
         return added.length > 0
       }
 
+      /** 分类浏览的下一页。 */
+      const moreBrowse = async () => {
+        const base = browsed
+        if (!base.hasMore || base.loadingMore || !base.cursor) return false
+        if (base.genre !== catGenre || base.theme !== catTheme) return false
+        setBrowsed((previous) => ({ ...previous, loadingMore: true }))
+        const seen = new Set(base.items.map((item) => item.id))
+        const added = []
+        let cursor = base.cursor
+        let hasMore = true
+        try {
+          for (let attempt = 0; attempt < 2 && hasMore; attempt += 1) {
+            const body = await browsePage(base.genre, base.theme, cursor)
+            for (const item of body.items ?? []) {
+              if (!item?.id || seen.has(item.id)) continue
+              seen.add(item.id)
+              added.push(item)
+            }
+            cursor = body.cursor ?? ''
+            hasMore = body.hasMore === true && cursor !== ''
+            if (added.length > 0) break
+          }
+        } catch {
+          setBrowsed((previous) => ({ ...previous, loadingMore: false }))
+          return false
+        }
+        if (added.length === 0) hasMore = false
+        setBrowsed((previous) =>
+          previous.genre !== base.genre || previous.theme !== base.theme
+            ? previous
+            : { ...previous, items: [...previous.items, ...added], cursor, hasMore, loadingMore: false },
+        )
+        return added.length > 0
+      }
+
       /** Next twelve; after the last page, fetch a fresh list and start over. */
       const nextBatch = () => {
         if (shownPage + 1 < pageCount) setPage(shownPage + 1)
@@ -1451,6 +1565,14 @@ window.__ModuleLoader__.load({
           }
           if (found.loadingMore) return
           moreSearch().then((grew) => setPage(grew ? shownPage + 1 : 0))
+        } else if (categoryActive) {
+          if (browsed.genre !== catGenre || browsed.theme !== catTheme) return
+          if (!browsed.hasMore) {
+            setPage(0)
+            return
+          }
+          if (browsed.loadingMore) return
+          moreBrowse().then((grew) => setPage(grew ? shownPage + 1 : 0))
         } else {
           setPage(0)
           fetchFeed(true)
@@ -1569,7 +1691,7 @@ window.__ModuleLoader__.load({
               t('player.historyOpen'),
               watched.length > 0 ? h('span', { className: 'hg-count' }, String(watched.length)) : null,
             ),
-        series ? null : h('button', { className: 'hg-btn', type: 'button', onClick: nextBatch, disabled: feed.status === 'loading' || Boolean(keyword && found.loadingMore) }, t('player.refresh')),
+        series ? null : h('button', { className: 'hg-btn', type: 'button', onClick: nextBatch, disabled: keyword ? Boolean(found.loadingMore) : categoryActive ? Boolean(browsed.loadingMore) : feed.status === 'loading' }, t('player.refresh')),
       )
 
       let content
@@ -1578,6 +1700,9 @@ window.__ModuleLoader__.load({
         if (keyword && found.status === 'error') grid = h(ErrorBox, { error: found.error, onRetry: () => setSearchTick((value) => value + 1) })
         else if (keyword && (found.status === 'loading' || found.keyword !== keyword)) grid = h('div', { className: 'hg-muted' }, t('player.searching'))
         else if (keyword && visible.length === 0) grid = h('div', { className: 'hg-empty' }, t('player.noResults').replace('{q}', keyword))
+        else if (categoryActive && browsed.status === 'error') grid = h(ErrorBox, { error: browsed.error, onRetry: () => setBrowseTick((value) => value + 1) })
+        else if (categoryActive && (browsed.status === 'loading' || browsed.genre !== catGenre || browsed.theme !== catTheme)) grid = h('div', { className: 'hg-muted' }, t('player.loading'))
+        else if (categoryActive && visible.length === 0) grid = h('div', { className: 'hg-empty' }, t('player.noCategory'))
         else if (feed.status === 'error') grid = h(ErrorBox, { error: feed.error, onRetry: loadFeed })
         else if (feed.status === 'loading' && visible.length === 0) grid = h('div', { className: 'hg-muted' }, t('player.loading'))
         else if (visible.length === 0) grid = h('div', { className: 'hg-empty' }, t('player.noSource'))
@@ -1595,6 +1720,68 @@ window.__ModuleLoader__.load({
               ),
             ),
           )
+        const genreFallback = [
+          { name: '真人剧', value: 'short_play' },
+          { name: '漫剧', value: 'comic_series' },
+          { name: 'AI剧', value: 'ai_series' },
+        ]
+        const genreGroup = catGroups.groups.find((group) => group.key === 'genre')
+        const genreOptions = genreGroup?.options?.length ? genreGroup.options : genreFallback
+        const themeGroup = catGroups.groups.find((group) => group.key === 'category_dim_theme')
+        const themeOptions = themeGroup?.options ?? []
+        const categories = source === 'hghub' ? null : h(
+          'div',
+          { className: 'hg-cats' },
+          h(
+            'div',
+            { className: 'hg-cat-line' },
+            h('span', { className: 'hg-cat-label' }, t('player.genre')),
+            h(
+              'div',
+              { className: 'hg-cat-scroll' },
+              [{ name: t('player.all'), value: '' }, ...genreOptions].map((option) =>
+                h('button', {
+                  key: 'g:' + option.value,
+                  type: 'button',
+                  className: 'hg-pill',
+                  'aria-pressed': String((catGenre || '') === (option.value || '')),
+                  onClick: () => {
+                    setCatGenre(option.value || '')
+                    setCatTheme('')
+                    setQuery('')
+                    setPage(0)
+                    setBrowseTick(0)
+                  },
+                }, option.name),
+              ),
+            ),
+          ),
+          catGroups.genre === catGenre && catGroups.status !== 'error' && themeOptions.length > 0
+            ? h(
+                'div',
+                { className: 'hg-cat-line' },
+                h('span', { className: 'hg-cat-label' }, t('player.theme')),
+                h(
+                  'div',
+                  { className: 'hg-cat-scroll' },
+                  [{ name: t('player.all'), value: '' }, ...themeOptions].map((option) =>
+                    h('button', {
+                      key: 't:' + option.value,
+                      type: 'button',
+                      className: 'hg-pill',
+                      'aria-pressed': String((catTheme || '') === (option.value || '')),
+                      onClick: () => {
+                        setCatTheme(option.value || '')
+                        setQuery('')
+                        setPage(0)
+                        setBrowseTick(0)
+                      },
+                    }, option.name),
+                  ),
+                ),
+              )
+            : null,
+        )
         const historyPanel = showHistory
           ? h(
               'div',
@@ -1636,7 +1823,7 @@ window.__ModuleLoader__.load({
           React.Fragment,
           null,
           historyPanel,
-          recommendation && !query.trim()
+          recommendation && !query.trim() && !categoryActive
             ? h(
                 'div',
                 { className: 'hg-feature' },
@@ -1675,6 +1862,7 @@ window.__ModuleLoader__.load({
               'aria-label': t('player.search'),
             }),
           ),
+          categories,
           grid,
         )
       } else {

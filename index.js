@@ -728,6 +728,38 @@ export function apply(ctx, config = {}) {
   /** Posters looked up for search results, by series id. */
   const searchCovers = new Map()
 
+  /** 分类筛选面板按体裁缓存：短剧筛选页的维度不常变。 */
+  const categoryPanels = new Map()
+
+  /**
+   * 短剧分类面板（体裁、主题、设定、背景、排序……）。
+   *
+   * 不同体裁的主题/设定值不一样（同一个“爱情”在真人剧和漫剧下编号不同），
+   * 所以按 genre 分开取、分开缓存；切体裁时前端会清空已选主题再取一份。
+   */
+  async function loadCategoryPanel(genre) {
+    const key = genre || ''
+    const hit = categoryPanels.get(key)
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.groups
+    const sdk = await client()
+    const read = () => sdk.shortFilterPanel(genre || undefined)
+    let rows
+    try {
+      rows = await read()
+    } catch (error) {
+      if (error?.code !== 'ANONYMOUS_LIMITED') throw error
+      await sdk.resetDevice()
+      rows = await read()
+    }
+    const groups = (rows ?? []).map((row) => ({
+      key: row.key,
+      name: row.name,
+      options: (row.options ?? []).map((option) => ({ name: option.name, value: option.value })),
+    }))
+    categoryPanels.set(key, { at: Date.now(), groups })
+    return groups
+  }
+
   /** Rebuild the cached list in the background. */
   let refreshing
   function refreshFeed() {
@@ -1105,6 +1137,44 @@ export function apply(ctx, config = {}) {
           }),
         )
         return { items: rows, cursor: page?.cursor ?? '', hasMore: page?.has_more === true }
+      })
+    }
+
+    // 分类面板：体裁分组 + 该体裁下的主题/设定/背景等维度。
+    if (path === '/categories') {
+      const genre = (url.searchParams.get('genre') ?? '').trim().slice(0, 32)
+      if (usesHghub(url)) return send(200, { groups: [] })
+      // 首页只放体裁和主题两行，其余维度留在 SDK 里，免得每次多传几十 KB。
+      return json(async () => {
+        const groups = await loadCategoryPanel(genre)
+        return { groups: groups.filter((group) => group.key === 'genre' || group.key === 'category_dim_theme') }
+      })
+    }
+
+    // 按分类浏览短剧：genre 与 theme 是 shortFilterPanel 给出的取值。
+    // shortFilter 的 cursor 很长（携带整页 id 列表），必须原样带回。
+    if (path === '/browse') {
+      const genre = (url.searchParams.get('genre') ?? '').trim().slice(0, 32)
+      const theme = (url.searchParams.get('theme') ?? '').trim().slice(0, 32)
+      const cursor = (url.searchParams.get('cursor') ?? '').trim().slice(0, 8192)
+      if (usesHghub(url)) return send(400, { ok: false, error: { message: '分类浏览只支持红果片源' } })
+      const selections = {}
+      if (genre) selections.genre = [genre]
+      if (theme) selections.category_dim_theme = [theme]
+      return json(async () => {
+        const sdk = await client()
+        const read = () => sdk.shortFilter({ selections, ...(cursor ? { cursor } : {}) })
+        let page
+        try {
+          page = await read()
+        } catch (error) {
+          if (error?.code !== 'ANONYMOUS_LIMITED') throw error
+          await sdk.resetDevice()
+          page = await read()
+        }
+        const seen = new Map()
+        for (const item of page?.items ?? []) mergeRows(seen, item)
+        return { items: [...seen.values()], cursor: page?.cursor ?? '', hasMore: page?.has_more === true }
       })
     }
 
