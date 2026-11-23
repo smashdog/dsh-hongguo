@@ -237,18 +237,18 @@ function startDanmaku() {
   let pointer = 0
   let lastNow = -1
   let laneCursor = 0
-  const lanes = 5
+  const lanes = 4
   const speed = 110 // px/s
   const spawn = (text) => {
     if (dmLayer.childElementCount >= 40) return
     const width = dmLayer.clientWidth || stage.clientWidth || 320
-    const usable = Math.round((dmLayer.clientHeight || stage.clientHeight || 480) * 0.7)
+    const usable = Math.round((dmLayer.clientHeight || stage.clientHeight || 480) * 0.25)
     const el = document.createElement('span')
     el.className = 'hg-dm'
     el.textContent = text
     const lane = laneCursor % lanes
     laneCursor += 1
-    el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 12}px`
+    el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 7}px`
     el.style.transform = `translateX(${width}px)`
     dmLayer.append(el)
     const elWidth = el.offsetWidth || 120

@@ -314,7 +314,7 @@ window.__ModuleLoader__.load({
 @keyframes hg-pulse{0%,100%{opacity:1}50%{opacity:.25}}
 /* 弹幕：铺在画面上、控制条下面的一层，元素由脚本按播放时间生成并滑过。 */
 .hg-danmaku{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2;contain:layout paint;}
-.hg-dm{position:absolute;left:0;top:0;white-space:nowrap;color:#fff;font-size:15px;font-weight:600;line-height:1.25;letter-spacing:.2px;text-shadow:0 1px 2px rgba(0,0,0,.9),0 0 3px rgba(0,0,0,.65);will-change:transform;padding:0 2px;}
+.hg-dm{position:absolute;left:0;top:0;white-space:nowrap;color:#fff;font-size:11px;font-weight:600;line-height:1.25;letter-spacing:.2px;text-shadow:0 1px 2px rgba(0,0,0,.9),0 0 3px rgba(0,0,0,.65);will-change:transform;padding:0 2px;}
 .hg-ctl.active{color:#ffd54a;}
 `
 
@@ -983,18 +983,18 @@ window.__ModuleLoader__.load({
         let pointer = 0
         let lastNow = -1
         let laneCursor = 0
-        const lanes = 5
+        const lanes = 4
         const speed = 110 // px/s
         const spawn = (text) => {
           if (box.childElementCount >= 40) return
           const width = box.clientWidth || 320
-          const usable = Math.round((box.clientHeight || 480) * 0.7)
+          const usable = Math.round((box.clientHeight || 480) * 0.25)
           const el = document.createElement('span')
           el.className = 'hg-dm'
           el.textContent = text
           const lane = laneCursor % lanes
           laneCursor += 1
-          el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 12}px`
+          el.style.top = `${Math.round((lane + 0.5) * (usable / lanes)) - 7}px`
           el.style.transform = `translateX(${width}px)`
           box.append(el)
           const elWidth = el.offsetWidth || 120
