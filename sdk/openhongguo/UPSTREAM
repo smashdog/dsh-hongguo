@@ -1,2 +1,5 @@
-Built from beilunyang/openhongguo@015a388 (bindings/node, `npm run build`).
-Vendored until a release with the playback Argus/Ladon signing fix (bed1459) reaches npm.
+Built from beilunyang/openhongguo@32d2a8c6387d4a63fe9262525531dd9d363f9833 (git main, 2026-11-23; CHANGELOG calls this 0.4.1, package.json upstream is still 0.4.0).
+Vendored because npm has not published a release with:
+- 0.3.0 playback Argus/Ladon signing (fixes empty play URLs after 2025-11-10);
+- x-medusa device status 377 -> 369 (2025-11-23 commits 8134661, 50baf58, 979160b), which fixes empty playback responses.
+Built locally with Go 1.27.4 (GOOS=js GOARCH=wasm) via `npm run build` in bindings/node on 2026-11-24.
